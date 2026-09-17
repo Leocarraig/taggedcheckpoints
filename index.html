@@ -179,6 +179,16 @@
   .gps-capture button{flex:none;background:#F0F4F8;border:1.5px solid var(--line);border-radius:10px;font-weight:700;font-size:12px;padding:10px 12px;cursor:pointer;color:var(--navy-2);}
   .gps-capture .val{font-size:12px;color:var(--sub);}
 
+  .mode-btn{flex:1;padding:11px;border-radius:10px;border:1.5px solid var(--line);background:#fff;font-weight:700;font-size:13px;cursor:pointer;color:var(--navy-2);}
+  .mode-btn.active{background:var(--navy);color:#fff;border-color:var(--navy);}
+  .fixed-time-item{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px;}
+  .fixed-time-item:last-child{border-bottom:none;}
+  .fixed-time-item .rm{color:var(--red);font-weight:700;font-size:11.5px;cursor:pointer;background:none;border:none;}
+  .countdown-banner{background:#EEF2F6;border:1.5px solid var(--line);border-radius:12px;padding:14px;text-align:center;margin-top:18px;}
+  .countdown-banner .cd-label{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--sub);margin-bottom:4px;}
+  .countdown-banner .cd-time{font-size:26px;font-weight:800;color:var(--navy);letter-spacing:1px;}
+  .countdown-banner.due .cd-time{color:var(--red);}
+
   .toast{position:fixed;left:50%;bottom:118px;transform:translateX(-50%) translateY(20px);background:var(--navy);color:#fff;padding:11px 18px;border-radius:999px;font-size:13px;font-weight:700;z-index:120;opacity:0;pointer-events:none;transition:opacity .2s, transform .2s;box-shadow:0 8px 20px rgba(14,35,64,.35);max-width:88%;text-align:center;}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
   .hidden{display:none !important;}
@@ -219,6 +229,10 @@
     </div>
     <div class="setup-note" id="setupNote" style="display:none;">
       This device hasn't been set up yet. Contact your supervisor to have it configured.
+    </div>
+    <div class="countdown-banner hidden" id="countdownBanner">
+      <div class="cd-label">Next patrol due</div>
+      <div class="cd-time" id="countdownTime">--:--:--</div>
     </div>
   </div>
 
@@ -265,7 +279,7 @@
           <span class="tag">On shift</span>
           <b id="opNameEcho">—</b>
         </div>
-        <button class="btn-ghost" id="endShiftBtn" type="button">End shift</button>
+        <button class="btn-ghost" id="endShiftBtn" type="button">End this patrol</button>
       </div>
       <div class="banner info" style="margin-top:10px;display:flex;align-items:center;gap:8px;">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;"><path d="M12 22s8-7.58 8-13A8 8 0 0 0 4 9c0 5.42 8 13 8 13z"/><circle cx="12" cy="9" r="2.6"/></svg>
@@ -417,6 +431,31 @@
     </div>
     <button class="sheet-save" id="saveEndpointBtn" type="button">Save Endpoint</button>
 
+    <div class="subhead">Patrol Schedule</div>
+    <div class="field">
+      <label>How should the next patrol be timed? <span class="hint">counts from "End this patrol"</span></label>
+      <div class="row2">
+        <button type="button" class="mode-btn" id="modeIntervalBtn" data-mode="interval">Set interval</button>
+        <button type="button" class="mode-btn" id="modeFixedBtn" data-mode="fixed">Set times</button>
+      </div>
+    </div>
+    <div id="scheduleIntervalFields">
+      <div class="row2">
+        <input type="number" id="schIntervalMinutes" placeholder="Minutes between patrols" min="1">
+        <input type="time" id="schStartTime">
+      </div>
+      <div class="hint" style="display:block;margin-top:4px;">e.g. every 40 minutes, starting at 01:00</div>
+    </div>
+    <div id="scheduleFixedFields" class="hidden">
+      <div id="fixedTimesList"></div>
+      <div class="add-row" style="margin-top:8px;">
+        <input type="time" id="newFixedTime">
+        <button id="addFixedTimeBtn" type="button">+</button>
+      </div>
+      <div class="hint" style="display:block;margin-top:4px;">e.g. 01:00, 01:40, 02:20…</div>
+    </div>
+    <button class="sheet-save" id="saveScheduleBtn" type="button" style="margin-top:10px;">Save Patrol Schedule</button>
+
     <button class="sheet-danger" id="clearLogBtn" type="button">Clear local log for this device</button>
     <button class="sheet-close" id="settingsClose" type="button">Close</button>
   </div>
@@ -432,6 +471,7 @@ const LS_CPS = 'tcp_checkpoints';
 const LS_CURRENT_OP = 'tcp_current_op';
 const LS_ENDPOINT = 'tcp_endpoint';
 const LS_LOG = 'tcp_log';
+const LS_SCHEDULE = 'tcp_schedule';
 
 function loadJSON(key, fallback){ try{ const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }catch(e){ return fallback; } }
 function saveJSON(key, val){ try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
@@ -444,6 +484,8 @@ let endpoint = localStorage.getItem(LS_ENDPOINT) || '';
 let log = loadJSON(LS_LOG, []);
 let gpsWatchId = null;
 let lastKnownPosition = null;
+let schedule = loadJSON(LS_SCHEDULE, { mode:'interval', intervalMinutes:40, startTime:'01:00', times:[] });
+let countdownTimer = null;
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -467,10 +509,72 @@ function showScreen(name){
   document.getElementById('gpsNoticeScreen').classList.add('hidden');
   mainApp.classList.add('hidden');
   actionBar.classList.add('hidden');
-  if(name === 'lock'){ lockScreen.classList.remove('hidden'); resetPinEntry(); }
-  if(name === 'operative'){ operativeScreen.classList.remove('hidden'); renderOpList(); }
-  if(name === 'gpsNotice'){ document.getElementById('gpsNoticeScreen').classList.remove('hidden'); }
-  if(name === 'main'){ mainApp.classList.remove('hidden'); actionBar.classList.remove('hidden'); refreshMainUI(); }
+  if(name === 'lock'){ lockScreen.classList.remove('hidden'); resetPinEntry(); startCountdown(); }
+  if(name === 'operative'){ operativeScreen.classList.remove('hidden'); renderOpList(); stopCountdown(); }
+  if(name === 'gpsNotice'){ document.getElementById('gpsNoticeScreen').classList.remove('hidden'); stopCountdown(); }
+  if(name === 'main'){ mainApp.classList.remove('hidden'); actionBar.classList.remove('hidden'); refreshMainUI(); stopCountdown(); }
+}
+
+/* ================= Patrol schedule / countdown ================= */
+function computeNextPatrolTime(sch, from){
+  from = from || new Date();
+  if(sch.mode === 'fixed'){
+    if(!sch.times || sch.times.length === 0) return null;
+    const sorted = sch.times.slice().sort();
+    const todayStr = from.toISOString().slice(0,10);
+    for(const t of sorted){
+      const [h,m] = t.split(':').map(Number);
+      const candidate = new Date(from.getFullYear(), from.getMonth(), from.getDate(), h, m, 0, 0);
+      if(candidate > from) return candidate;
+    }
+    const [h,m] = sorted[0].split(':').map(Number);
+    const tomorrow = new Date(from.getFullYear(), from.getMonth(), from.getDate()+1, h, m, 0, 0);
+    return tomorrow;
+  } else {
+    const minutes = parseFloat(sch.intervalMinutes);
+    if(!minutes || minutes <= 0 || !sch.startTime) return null;
+    const [h,m] = sch.startTime.split(':').map(Number);
+    let anchor = new Date(from.getFullYear(), from.getMonth(), from.getDate(), h, m, 0, 0);
+    if(anchor > from) anchor.setDate(anchor.getDate()-1);
+    const elapsedMs = from.getTime() - anchor.getTime();
+    const intervalMs = minutes * 60000;
+    const n = Math.floor(elapsedMs / intervalMs) + 1;
+    return new Date(anchor.getTime() + n * intervalMs);
+  }
+}
+
+function scheduleConfigured(){
+  if(schedule.mode === 'fixed') return schedule.times && schedule.times.length > 0;
+  return !!(schedule.intervalMinutes && schedule.startTime);
+}
+
+function startCountdown(){
+  stopCountdown();
+  const banner = document.getElementById('countdownBanner');
+  if(!scheduleConfigured() || !pin){ banner.classList.add('hidden'); return; }
+  banner.classList.remove('hidden');
+  function tick(){
+    const next = computeNextPatrolTime(schedule);
+    const timeEl = document.getElementById('countdownTime');
+    if(!next){ banner.classList.add('hidden'); return; }
+    const diff = next.getTime() - Date.now();
+    if(diff <= 0){
+      timeEl.textContent = 'Now';
+      banner.classList.add('due');
+    } else {
+      banner.classList.remove('due');
+      const totalSec = Math.floor(diff/1000);
+      const hh = String(Math.floor(totalSec/3600)).padStart(2,'0');
+      const mm = String(Math.floor((totalSec%3600)/60)).padStart(2,'0');
+      const ss = String(totalSec%60).padStart(2,'0');
+      timeEl.textContent = hh+':'+mm+':'+ss;
+    }
+  }
+  tick();
+  countdownTimer = setInterval(tick, 1000);
+}
+function stopCountdown(){
+  if(countdownTimer){ clearInterval(countdownTimer); countdownTimer = null; }
 }
 
 function routeOnLoad(){
@@ -557,13 +661,28 @@ document.getElementById('ackGpsBtn').addEventListener('click', ()=>{
   startGpsTracking(true);
 });
 
-document.getElementById('endShiftBtn').addEventListener('click', ()=>{
+document.getElementById('endShiftBtn').addEventListener('click', async ()=>{
+  const endingOp = currentOp;
+  const nextDue = scheduleConfigured() ? computeNextPatrolTime(schedule) : null;
   stopGpsTracking();
   currentOp = null;
   localStorage.removeItem(LS_CURRENT_OP);
   selectedOp = null;
   showScreen('lock');
-  toast('Shift ended — GPS tracking stopped');
+  toast('Patrol ended — GPS tracking stopped');
+  if(endpoint && endingOp){
+    const rec = {
+      id: 'PE-' + Date.now(),
+      ts: new Date().toISOString(),
+      operativeId: endingOp.id,
+      operativeName: endingOp.name,
+      type: 'patrol_end',
+      nextPatrolDue: nextDue ? nextDue.toISOString() : ''
+    };
+    try{
+      await fetch(endpoint, { method:'POST', mode:'no-cors', headers:{'Content-Type':'text/plain;charset=utf-8'}, body: JSON.stringify(rec) });
+    }catch(e){}
+  }
 });
 
 function refreshMainUI(){
@@ -897,6 +1016,10 @@ document.getElementById('settingsBtn').addEventListener('click', ()=>{
   document.getElementById('endpointUrl').value = endpoint;
   renderOpRoster();
   renderCpRoster();
+  setScheduleMode(schedule.mode);
+  document.getElementById('schIntervalMinutes').value = schedule.intervalMinutes || '';
+  document.getElementById('schStartTime').value = schedule.startTime || '';
+  renderFixedTimesList();
   settingsOverlay.classList.add('show');
 });
 document.getElementById('settingsClose').addEventListener('click', ()=>{
@@ -994,6 +1117,69 @@ document.getElementById('saveEndpointBtn').addEventListener('click', ()=>{
   localStorage.setItem(LS_ENDPOINT, endpoint);
   renderLog();
   toast(endpoint ? 'Endpoint saved' : 'Endpoint cleared — local-log mode');
+});
+
+let scheduleFixedTimesDraft = [];
+function setScheduleMode(mode){
+  document.getElementById('modeIntervalBtn').classList.toggle('active', mode === 'interval');
+  document.getElementById('modeFixedBtn').classList.toggle('active', mode === 'fixed');
+  document.getElementById('scheduleIntervalFields').classList.toggle('hidden', mode !== 'interval');
+  document.getElementById('scheduleFixedFields').classList.toggle('hidden', mode !== 'fixed');
+  scheduleFixedTimesDraft = (schedule.times || []).slice();
+  currentScheduleMode = mode;
+}
+let currentScheduleMode = schedule.mode;
+document.getElementById('modeIntervalBtn').addEventListener('click', ()=> setScheduleMode('interval'));
+document.getElementById('modeFixedBtn').addEventListener('click', ()=> setScheduleMode('fixed'));
+
+function renderFixedTimesList(){
+  scheduleFixedTimesDraft = (schedule.times || []).slice();
+  const el = document.getElementById('fixedTimesList');
+  if(scheduleFixedTimesDraft.length === 0){ el.innerHTML = '<div class="empty-log">No times added yet</div>'; return; }
+  el.innerHTML = scheduleFixedTimesDraft.sort().map(t =>
+    '<div class="fixed-time-item"><span>'+t+'</span><button class="rm" data-t="'+t+'">Remove</button></div>'
+  ).join('');
+  el.querySelectorAll('.rm').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      scheduleFixedTimesDraft = scheduleFixedTimesDraft.filter(t=>t !== b.dataset.t);
+      renderFixedTimesListFromDraft();
+    });
+  });
+}
+function renderFixedTimesListFromDraft(){
+  const el = document.getElementById('fixedTimesList');
+  if(scheduleFixedTimesDraft.length === 0){ el.innerHTML = '<div class="empty-log">No times added yet</div>'; return; }
+  el.innerHTML = scheduleFixedTimesDraft.slice().sort().map(t =>
+    '<div class="fixed-time-item"><span>'+t+'</span><button class="rm" data-t="'+t+'">Remove</button></div>'
+  ).join('');
+  el.querySelectorAll('.rm').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      scheduleFixedTimesDraft = scheduleFixedTimesDraft.filter(t=>t !== b.dataset.t);
+      renderFixedTimesListFromDraft();
+    });
+  });
+}
+document.getElementById('addFixedTimeBtn').addEventListener('click', ()=>{
+  const t = document.getElementById('newFixedTime').value;
+  if(!t){ toast('Pick a time first'); return; }
+  if(scheduleFixedTimesDraft.includes(t)){ toast('That time is already added'); return; }
+  scheduleFixedTimesDraft.push(t);
+  document.getElementById('newFixedTime').value = '';
+  renderFixedTimesListFromDraft();
+});
+
+document.getElementById('saveScheduleBtn').addEventListener('click', ()=>{
+  if(currentScheduleMode === 'fixed'){
+    if(scheduleFixedTimesDraft.length === 0){ toast('Add at least one time'); return; }
+    schedule = { mode:'fixed', times: scheduleFixedTimesDraft.slice() };
+  } else {
+    const minutes = parseFloat(document.getElementById('schIntervalMinutes').value);
+    const startTime = document.getElementById('schStartTime').value;
+    if(!minutes || minutes <= 0 || !startTime){ toast('Enter interval minutes and a start time'); return; }
+    schedule = { mode:'interval', intervalMinutes: minutes, startTime: startTime };
+  }
+  saveJSON(LS_SCHEDULE, schedule);
+  toast('Patrol schedule saved');
 });
 
 document.getElementById('clearLogBtn').addEventListener('click', ()=>{
